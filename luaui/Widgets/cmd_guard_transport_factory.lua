@@ -43,12 +43,11 @@ local debugLog = false
 local POLLING_RATE = 10
 
 -- =================GLOBAL VARIABLES==============
-local factories = {}
-local allUnits = {}
+local factoryGuards = {}    -- Factory ID -> Set of transport IDs guarding it: {[transportID] = true, ...}
+local transportJobs = {}    -- Transport ID -> {factoryID = id, state = state}
+local activeFerryTasks = {} -- Transport ID -> {unitID = id, destination = pos, unitTag = tag}
+local unitToTransportMap = {} -- Unit ID -> Transport ID (for cleanup)
 local myTeam = Spring.GetLocalTeamID()
-local transports = {}
-local watchedTransports = {}
-local watchedUnits = {}
 local frameIndex = 0
 local transport_states = {
     idle = 0,
@@ -200,7 +199,7 @@ end
 
 function Factory:registerTransport(unitID)
     self.guardingTransports[unitID] = true
-    transports[unitID].guardedFactoryID = self.unitID
+    transportJobs[unitID].guardedFactoryID = self.unitID
 end
 
 local function registerUnit(unitID)
@@ -208,16 +207,12 @@ local function registerUnit(unitID)
     local createdUnitDefs = cachedUnitDefs[unitDefID]
 
     if createdUnitDefs.isTransport then
-        if transports[unitID] == nil then
-            transports[unitID] = Transporter:new(unitID)
+        if transportJobs[unitID] == nil then
+            transportJobs[unitID] = Transporter:new(unitID)
         end
     elseif IsFab(unitID) == true then
-        if factories[unitID] == nil then
-            factories[unitID] = Factory:new(unitID)
-        end
-    else
-        if allUnits[unitID] == nil then
-            allUnits[unitID] = Unit:new(unitID)
+        if factoryGuards[unitID] == nil then
+            factoryGuards[unitID] = Factory:new(unitID)
         end
     end
 end
@@ -245,8 +240,8 @@ function widget:Initialize()
             registerUnit(targetUnitID)
             registerUnit(unitID)
             Log("Transport " .. unitID .. " IDLE after registering", debugLog)
-            factories[targetUnitID]:registerTransport(unitID)
-            transports[unitID].state = transport_states.idle
+            factoryGuards[targetUnitID]:registerTransport(unitID)
+            transportJobs[unitID].state = transport_states.idle
         end
     end
 end
@@ -267,19 +262,79 @@ local function isWaiting(unitID)
     return false
 end
 
+function registerGuardingTransport(transportID, factoryID)
+    -- Add transport to factory's guards
+    factoryGuards[factoryID] = factoryGuards[factoryID] or {}
+    factoryGuards[factoryID][transportID] = true
+    
+    -- Set transport's assignment
+    transportJobs[transportID] = {
+        factoryID = factoryID,
+        state = transport_states.idle
+    }
+end
+
+function startFerryTask(transportID, unitID, destination, initialTag)
+    transportJobs[transportID].state = transport_states.approaching
+    
+    -- Create ferry task
+    activeFerryTasks[transportID] = {
+        unitID = unitID,
+        destination = destination,
+        unitTag = initialTag,
+        firstOrderCompleted = false
+    }
+    
+    -- Set reverse lookup
+    unitToTransportMap[unitID] = transportID
+end
+
+function completeFerryTask(transportID)
+    local task = activeFerryTasks[transportID]
+    if task then
+        -- Clean up reverse lookup
+        unitToTransportMap[task.unitID] = nil
+        -- Remove task
+        activeFerryTasks[transportID] = nil
+    end
+    
+    -- Reset transport state
+    if transportJobs[transportID] then
+        transportJobs[transportID].state = transport_states.idle
+    end
+end
+
+function unregisterTransport(transportID)
+    -- Clean up any active ferry task
+    completeFerryTask(transportID)
+    
+    -- Remove from factory guards
+    local job = transportJobs[transportID]
+    if job and job.factoryID and factoryGuards[job.factoryID] then
+        factoryGuards[job.factoryID][transportID] = nil
+        -- Clean up empty factory entries
+        if not next(factoryGuards[job.factoryID]) then
+            factoryGuards[job.factoryID] = nil
+        end
+    end
+    
+    -- Remove transport job
+    transportJobs[transportID] = nil
+end
+
 function widget:GameFrame(frame)
     frameIndex = frameIndex + 1
     if frameIndex % POLLING_RATE ~= 0 then
         return
     end
 
-    for transportID, target in pairs(watchedTransports) do
+    for transportID, target in pairs(activeFerryTasks) do
         -- Check if transport has loaded unit
-        if allUnits[target] == nil and transports[transportID].state ~= transport_states.unloaded and transports[transportID].previousEngagement == false then
+        if allUnits[target] == nil and transportJobs[transportID].state ~= transport_states.unloaded and transportJobs[transportID].previousEngagement == false then
             -- unit has been blown up, reset to unloaded
             Log("Transport " .. transportID .. " UNLOADED", debugLog)
-            transports[transportID].state = transport_states.unloaded
-            Spring.GiveOrderToUnit(transportID, CMD.GUARD, transports[transportID].guardedFactoryID, { "shift" })  -- go back to base
+            transportJobs[transportID].state = transport_states.unloaded
+            Spring.GiveOrderToUnit(transportID, CMD.GUARD, transportJobs[transportID].guardedFactoryID, { "shift" })  -- f back to base
         else
             local targetUnit = allUnits[target]
 
@@ -294,75 +349,84 @@ function widget:GameFrame(frame)
 
             -- Order the built unit to stop if it's out of the factory
             local transported = Spring.GetUnitIsTransporting(transportID) or {}
-            if transports[transportID].state == transport_states.picking_up then
-                local factoryLocation  = getUnitPositionTuple(transports[transportID].guardedFactoryID)
+            if transportJobs[transportID].state == transport_states.picking_up then
+                local factoryLocation  = getUnitPositionTuple(transportJobs[transportID].guardedFactoryID)
                 local unitLocation     = getUnitPositionTuple(target)
                 local isFarFromFactory = Distance(factoryLocation, unitLocation) > 300
                 local readyForPickup   = isFarFromFactory or targetUnit.firstOrderCompleted
 
                 if readyForPickup then
                     if isWaiting(target) == false then
-                        Log("Issuing wait " .. watchedTransports[transportID], debugLog)
-                        Spring.GiveOrderToUnit(watchedTransports[transportID], CMD.WAIT, {}, { "alt" })
+                        Log("Issuing wait " .. activeFerryTasks[transportID], debugLog)
+                        Spring.GiveOrderToUnit(activeFerryTasks[transportID], CMD.WAIT, {}, { "alt" })
                     end
                 end
                 -- Check if we picked up the unit already
                 for _, id in ipairs(transported) do
-                    if watchedTransports[transportID] == id then
+                    if activeFerryTasks[transportID] == id then
                         Log("Transport " .. transportID .. " LOADED", debugLog)
-                        transports[transportID].state = transport_states.loaded
+                        transportJobs[transportID].state = transport_states.loaded
                         if isWaiting(target) then
-                            Spring.GiveOrderToUnit(watchedTransports[transportID], CMD.WAIT, {}, { "alt" })
+                            Spring.GiveOrderToUnit(activeFerryTasks[transportID], CMD.WAIT, {}, { "alt" })
                         end
-                        Spring.GiveOrderToUnit(transportID, CMD.UNLOAD_UNIT, transports[transportID].destination,
+                        Spring.GiveOrderToUnit(transportID, CMD.UNLOAD_UNIT, transportJobs[transportID].destination,
                             CMD.OPT_RIGHT)
                     end
                 end
             end
 
             -- Become available once unloaded
-            if transports[transportID].state == transport_states.unloaded then
-                transports[transportID].state  = transport_states.idle
-                watchedUnits[target]           = nil
-                watchedTransports[transportID] = nil
+            if transportJobs[transportID].state == transport_states.unloaded then
+                transportJobs[transportID].state  = transport_states.idle
+                allUnits[target]           = nil
+                activeFerryTasks[transportID] = nil
             end
 
             -- If trans was carrying a unit when told to guard, unload it right on the ground
-            if transports[transportID].state == transport_states.loaded and transports[transportID].previousEngagement then
+            if transportJobs[transportID].state == transport_states.loaded and transportJobs[transportID].previousEngagement then
                 local x, y, z = Spring.GetUnitPosition(transportID)
-                transports[transportID].previousEngagement = false
+                transportJobs[transportID].previousEngagement = false
                 Spring.GiveOrderToUnit(transportID, CMD.STOP, {}, { "alt" })
                 Spring.GiveOrderToUnit(transportID, CMD.UNLOAD_UNIT, { x, Spring.GetGroundHeight(x, z), z }, {})
             end
 
             -- Check if unit has left transport
             local carriedUnits = Spring.GetUnitIsTransporting(transportID)
-            if carriedUnits == nil or #carriedUnits == 0 and transports[transportID].state == transport_states.loaded then
+            if carriedUnits == nil or #carriedUnits == 0 and transportJobs[transportID].state == transport_states.loaded then
                 Log("Transport " .. transportID .. " UNLOADED", debugLog)
-                transports[transportID].state = transport_states.unloaded
-                Spring.GiveOrderToUnit(transportID, CMD.GUARD, transports[transportID].guardedFactoryID, { "shift" })  -- go back to base
+                transportJobs[transportID].state = transport_states.unloaded
+                Spring.GiveOrderToUnit(transportID, CMD.GUARD, transportJobs[transportID].guardedFactoryID, { "shift" })  -- go back to base
             end
 
             -- The transport wants to pick up the unit. If the unit is waiting, go ahead and pick it up.
-            if transports[transportID].state == transport_states.approaching then
+            if transportJobs[transportID].state == transport_states.approaching then
                 if isWaiting(target) then
                     Log("Transport " .. transportID .. " PICKING_UP", debugLog)
-                    transports[transportID].state = transport_states.picking_up
+                    transportJobs[transportID].state = transport_states.picking_up
                     Spring.GiveOrderToUnit(transportID, CMD.LOAD_UNITS, target, { "right" }) --Load Unit
                 end
-                local factoryLocation  = getUnitPositionTuple(transports[transportID].guardedFactoryID)
+                local factoryLocation  = getUnitPositionTuple(transportJobs[transportID].guardedFactoryID)
                 local unitLocation     = getUnitPositionTuple(target)
                 local isFarFromFactory = Distance(factoryLocation, unitLocation) > 300
                 local readyForPickup   = isFarFromFactory or targetUnit.firstOrderCompleted
 
                 if readyForPickup then
                     if isWaiting(target) == false then
-                        Log("Issuing wait " .. watchedTransports[transportID], debugLog)
-                        Spring.GiveOrderToUnit(watchedTransports[transportID], CMD.WAIT, {}, { "alt" })
+                        Log("Issuing wait " .. activeFerryTasks[transportID], debugLog)
+                        Spring.GiveOrderToUnit(activeFerryTasks[transportID], CMD.WAIT, {}, { "alt" })
                     end
                 end
             end
         end
+    end
+
+    -- Only process transports with active ferry tasks
+    for transportID, task in pairs(activeFerryTasks) do
+        local transportState = transportJobs[transportID].state
+        local unitID = task.unitID
+        
+        -- Process based on state (similar to current logic but more focused)
+        -- ...
     end
 end
 
@@ -371,30 +435,30 @@ local function inactivateUnit(unitID)
     if allUnits[unitID] ~= nil then
         return
     end
-    local responsibleTransport = watchedUnits[unitID]
+    local responsibleTransport = activeFerryTasks[unitID]
     if responsibleTransport ~= nil then
-        transports[responsibleTransport].state = transport_states.unloaded
+        transportJobs[responsibleTransport].state = transport_states.unloaded
     end
 end
 
 local function inactivateTransport(unitID)
-    if transports[unitID] == nil then
+    if transportJobs[unitID] == nil then
         return
     end
-    local guardedFactoryID = transports[unitID].guardedFactoryID
-    if guardedFactoryID ~= nil and factories[guardedFactoryID] ~= nil then
-        factories[guardedFactoryID].guardingTransports[unitID] = nil
+    local guardedFactoryID = transportJobs[unitID].guardedFactoryID
+    if guardedFactoryID ~= nil and factoryGuards[guardedFactoryID] ~= nil then
+        factoryGuards[guardedFactoryID].guardingTransports[unitID] = nil
     end
-    transports[unitID] = nil
-    if watchedTransports[unitID] ~= nil then
-        local unitWaitingForPickup = watchedTransports[unitID]
+    transportJobs[unitID] = nil
+    if activeFerryTasks[unitID] ~= nil then
+        local unitWaitingForPickup = activeFerryTasks[unitID]
         if unitWaitingForPickup ~= nil and isWaiting(unitWaitingForPickup) then
-            Log("Issuing wait " .. watchedTransports[unitID], debugLog)
-            Spring.GiveOrderToUnit(watchedTransports[unitID], CMD.WAIT, {}, { "alt" })
+            Log("Issuing wait " .. activeFerryTasks[unitID], debugLog)
+            Spring.GiveOrderToUnit(activeFerryTasks[unitID], CMD.WAIT, {}, { "alt" })
         end
-        watchedUnits[watchedTransports[unitID]] = nil
-        table.remove(watchedTransports, unitID)
-        watchedTransports[unitID] = nil
+        allUnits[activeFerryTasks[unitID]] = nil
+        table.remove(activeFerryTasks, unitID)
+        activeFerryTasks[unitID] = nil
     end
 end
 
@@ -438,7 +502,7 @@ end
 function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
     local createdUnitDefs = cachedUnitDefs[unitDefID]
     local createdUnitID = unitID
-    local factory = factories[factID]
+    local factory = factoryGuards[factID]
     if unitTeam == myTeam then
         -- TODO Make this more efficient
         if createdUnitDefs.isTransport then
@@ -455,10 +519,10 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
             local targetUnitID = cmdParams[1]
             if IsFab(targetUnitID) then
                 registerUnit(targetUnitID)
-                transports[createdUnitID].state = transport_states.unloaded
-                factories[targetUnitID]:registerTransport(createdUnitID)
+                transportJobs[createdUnitID].state = transport_states.unloaded
+                factoryGuards[targetUnitID]:registerTransport(createdUnitID)
                 Log("Transport " .. createdUnitID .. " UNLOADED after registering", debugLog)
-                watchedTransports[createdUnitID] = 9999
+                activeFerryTasks[createdUnitID] = 9999
             end
             return
         elseif factory.guardingTransports then
@@ -479,19 +543,19 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
             local bestTransportID = -1
             local bestTransportTime = math.huge
             for transportID, _ in pairs(factory.guardingTransports) do
-                if transports[transportID].state == transport_states.idle and CanTransport(transportID, createdUnitID) then
-                    local Transport = transports[transportID]
-                    local unitCommands = Spring.GetUnitCommands(unitID, -1)
-                    local destination = getSecondMoveCommandDestination(unitID)
+                if transportJobs[transportID].state == transport_states.idle and CanTransport(transportID, createdUnitID) then
+                    local Transport = transportJobs[transportID]
+                    local unitCommands = Spring.GetUnitCommands(createdUnitID, -1)
+                    local destination = getSecondMoveCommandDestination(createdUnitID)
                     if Transport ~= nil and unitCommands ~= nil and unitCommands[1].id == CMD.MOVE and destination ~= nil then
-                        local x1, y1, z1        = Spring.GetUnitPosition(unitID)
+                        local x1, y1, z1        = Spring.GetUnitPosition(createdUnitID)
                         local unitLocation      = { x1, y1, z1 }
                         local x2, y2, z2        = Spring.GetUnitPosition(transportID)
                         local transportLocation = { x2, y2, z2 }
                         
                         local pickupTime        = timeToTarget(transportLocation, unitLocation, cachedUnitDefs[Spring.GetUnitDefID(transportID)].speed)
                         local transportTime     = timeToTarget(unitLocation,      destination,  cachedUnitDefs[Spring.GetUnitDefID(transportID)].speed)
-                        local walkingTime       = timeToTarget(unitLocation,      destination,  cachedUnitDefs[Spring.GetUnitDefID(unitID)].speed)
+                        local walkingTime       = timeToTarget(unitLocation,      destination,  cachedUnitDefs[Spring.GetUnitDefID(createdUnitID)].speed)
                         -- This also covers the case of builders guarding their factory
                         if walkingTime > 10 and pickupTime < 3 and pickupTime + transportTime < walkingTime then
                             if pickupTime + transportTime < bestTransportTime then
@@ -504,15 +568,14 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
             end
             if bestTransportID > -1 then
                 Log("Transport " .. bestTransportID .. " APPROACHING " .. createdUnitID, debugLog)
-                transports[bestTransportID].state       = transport_states.approaching
-                transports[bestTransportID].destination = destination
+                transportJobs[bestTransportID].state       = transport_states.approaching
+                transportJobs[bestTransportID].destination = destination
 
                 local unitWaitDestination               = getFirstMoveCommandDestination(createdUnitID)
                 Spring.GiveOrderToUnit(bestTransportID, CMD.MOVE, unitWaitDestination, { "right" }) --Load Unit
                 Spring.GiveOrderToUnit(bestTransportID, CMD.GUARD, factID, { "shift" })             --Load Unit
 
-                watchedTransports[bestTransportID] = createdUnitID
-                watchedUnits[createdUnitID] = bestTransportID
+                activeFerryTasks[bestTransportID] = createdUnitID
             end
         end
     end
@@ -529,18 +592,18 @@ function widget:CommandNotify(cmdID, cmdParams, cmdOpts)
                 registerUnit(orderedUnit)
                 local targetUnitID = cmdParams[1]
                 registerUnit(targetUnitID)
-                factories[targetUnitID]:registerTransport(orderedUnit)
+                factoryGuards[targetUnitID]:registerTransport(orderedUnit)
 
                 -- Unload anything you have when you go guard
                 local carriedUnits = Spring.GetUnitIsTransporting(orderedUnit)
                 if carriedUnits and #carriedUnits > 0 then
                     Log("Transport " .. orderedUnit .. " LOADED after registering", debugLog)
-                    transports[orderedUnit].previousEngagement = true
-                    transports[orderedUnit].state = transport_states.loaded
-                    watchedTransports[orderedUnit] = 9999
+                    transportJobs[orderedUnit].previousEngagement = true
+                    transportJobs[orderedUnit].state = transport_states.loaded
+                    activeFerryTasks[orderedUnit] = 9999
                 else
                     Log("Transport " .. orderedUnit .. " IDLE after registering with " .. targetUnitID, debugLog)
-                    transports[orderedUnit].state = transport_states.idle
+                    transportJobs[orderedUnit].state = transport_states.idle
                 end
             else
                 inactivateTransport(orderedUnit)
@@ -550,13 +613,28 @@ function widget:CommandNotify(cmdID, cmdParams, cmdOpts)
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
-    if transports[unitID] then
-        Log("Transporter destroyed", debugLog)
-        inactivateTransport(unitID)
+    local transportID = unitToTransportMap[unitID]
+    if transportID then
+        -- Unit being ferried was destroyed
+        completeFerryTask(transportID)
+        return
     end
-    if factories[unitID] then
-        factories[unitID] = nil
+    
+    -- Check if it's a transport
+    if transportJobs[unitID] then
+        unregisterTransport(unitID)
+        return
     end
+    
+    -- Check if it's a factory
+    if factoryGuards[unitID] then
+        -- Clean up all transports guarding this factory
+        for transportID in pairs(factoryGuards[unitID].guardingTransports) do
+            unregisterTransport(transportID)
+        end
+        factoryGuards[unitID] = nil
+    end
+
     if allUnits[unitID] then
         inactivateUnit(unitID)
         allUnits[unitID] = nil
