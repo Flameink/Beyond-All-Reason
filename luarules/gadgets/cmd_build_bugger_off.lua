@@ -25,7 +25,7 @@ for unitDefID, unitDef in pairs(UnitDefs) do
 		shouldNotBuggeroff[unitDefID] = true
 	end
 	
-	cachedUnitDefs[unitDefID] = { radius = unitDef.radius, isBuilder = unitDef.isBuilder}
+	cachedUnitDefs[unitDefID] = { radius = unitDef.radius, isBuilder = unitDef.isBuilder, speed = unitDef.speed }
 end
 
 local function willBeNearTarget(unitID, tx, ty, tz, seconds, maxDistance)
@@ -54,6 +54,7 @@ end
 local slowUpdateBuilders 	= {}
 local watchedBuilders 		= {}
 local builderRadiusOffsets 	= {}
+local builderDelayTicks     = {}
 local needsUpdate 			= false
 
 local FAST_UPDATE_RADIUS	= 400
@@ -64,6 +65,7 @@ local SEARCH_RADIUS_OFFSET  = 200
 local FAST_UPDATE_FREQUENCY = 30
 local SLOW_UPDATE_FREQUENCY = 60
 local BUGGEROFF_RADIUS_INCREMENT = FAST_UPDATE_FREQUENCY * 0.5
+local MAX_BUGGEROFF_RADIUS  = 600
 
 local function shouldIssueBuggeroff(builderTeam, interferingUnitID, x, y, z, radius)
 	if Spring.AreTeamsAllied(Spring.GetUnitTeam(interferingUnitID), builderTeam) == false then
@@ -85,6 +87,29 @@ local function shouldIssueBuggeroff(builderTeam, interferingUnitID, x, y, z, rad
 	return false
 end
 
+function watchBuilder(builderID)
+	slowUpdateBuilders[builderID]   = nil
+	watchedBuilders[builderID]		= true
+	builderRadiusOffsets[builderID] = 0
+	builderDelayTicks[builderID]	= 0
+end
+
+function removeBuilder(builderID)
+	slowUpdateBuilders[builderID]   = nil
+	watchedBuilders[builderID]	  	= nil
+	builderRadiusOffsets[builderID] = nil
+	builderDelayTicks[builderID]	= nil
+end
+
+function slowWatchBuilder(builderID)
+	watchedBuilders[builderID]	  	= nil
+	slowUpdateBuilders[builderID]   = true
+	builderRadiusOffsets[builderID] = nil
+	builderDelayTicks[builderID]	= nil
+	-- Give builder initial slow update right away in case the builder is already close
+	needsUpdate = true
+end
+
 function gadget:GameFrame(frame)
 	if frame % FAST_UPDATE_FREQUENCY ~= 0 then
 		return
@@ -100,10 +125,14 @@ function gadget:GameFrame(frame)
 		if targetID then isBuilding = true end
 		local visited = {}
 		
-		if cmdID == nil or cmdID > -1 or math.distance2d(targetX, targetZ, x, z) > FAST_UPDATE_RADIUS  then
-			watchedBuilders[builderID]	  	= nil
-			slowUpdateBuilders[builderID]   = true
-			builderRadiusOffsets[builderID] = 0
+		if builderRadiusOffsets[builderID] ~= nil and builderRadiusOffsets[builderID] > MAX_BUGGEROFF_RADIUS then
+			removeBuilder(builderID)
+
+		elseif cmdID == nil or cmdID > -1 or math.distance2d(targetX, targetZ, x, z) > FAST_UPDATE_RADIUS  then
+			slowWatchBuilder(builderID)
+
+		elseif builderDelayTicks[builderID] > 0 then
+			builderDelayTicks[builderID] = builderDelayTicks[builderID] - 1
 
 		elseif math.distance2d(targetX, targetZ, x, z) < BUILDER_BUILD_RADIUS + cachedUnitDefs[-cmdID].radius and isBuilding == false and Spring.GetUnitIsBeingBuilt(builderID) == false then
 			local builtUnitDefID	= -cmdID
@@ -130,6 +159,11 @@ function gadget:GameFrame(frame)
 
 						if Spring.TestMoveOrder(Spring.GetUnitDefID(interferingUnitID), sendX, targetY, sendZ) then 
 							Spring.GiveOrderToUnit(interferingUnitID, CMD.INSERT, {0, CMD.MOVE, CMD.OPT_INTERNAL, sendX, targetY, sendZ}, CMD.OPT_ALT )
+							
+							-- No point in issuing more commands if there is a slow unit
+							local distanceToSendLocation = math.distance2D(unitX, unitZ, sendX, sendZ)
+							local eta = math.distance2D(unitX, unitZ, sendX, sendZ) / cachedUnitDefs[interferingUnitID].speed
+							builderDelayTicks[builderID] = math.max(builderDelayTicks[builderID], eta / FAST_UPDATE_FREQUENCY)
 						end
 					end
 				end
@@ -168,11 +202,9 @@ function gadget:GameFrame(frame)
 
 		local x, _, z = Spring.GetUnitPosition(builderID)
 		if hasBuildCommand == false then
-			slowUpdateBuilders[builderID]   = nil
-			builderRadiusOffsets[builderID] = nil
+			removeBuilder(builderID)
 		elseif buildCommandFirst and isBuilding == false and math.distance2d(targetX, targetZ, x, z) <= FAST_UPDATE_RADIUS then
-			slowUpdateBuilders[builderID]   = nil
-			watchedBuilders[builderID]		= true
+			watchBuilder(builderID)
 		end
 	end
 end
@@ -194,12 +226,11 @@ end
 
 function gadget:MetaUnitRemoved(unitID, unitDefID, unitTeam)
 	cachedBuilderTeams[unitID] = nil
+	removeBuilder(builderID)
 end
 
 function gadget:UnitCommand(unitID, unitDefID, unitTeamID, cmdID, cmdParams, cmdOptions, cmdTag, playerID, fromSynced, fromLua)
 	if cachedUnitDefs[unitDefID].isBuilder then
-		slowUpdateBuilders[unitID]   = true
-		builderRadiusOffsets[unitID] = 0
-		needsUpdate = true -- Give builder initial slow update right away in case the builder is already close
+		slowWatchBuilder(unitID)
 	end
 end
