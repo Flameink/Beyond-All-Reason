@@ -36,14 +36,14 @@ end
 local function willBeNearTarget(unitID, tx, ty, tz, seconds, maxDistance)
 	local ux, uy, uz = Spring.GetUnitPosition(unitID)
 	if not ux then return false end
-	
+
 	local vx, vy, vz = Spring.GetUnitVelocity(unitID)
 	if not vx then return false end
-	
+
 	local futureX = ux + vx * seconds * Game.gameSpeed
 	local futureY = uy + vy * seconds * Game.gameSpeed
 	local futureZ = uz + vz * seconds * Game.gameSpeed
-	
+
 	local dx = futureX - tx
 	local dy = futureY - ty
 	local dz = futureZ - tz
@@ -194,7 +194,7 @@ function gadget:GameFrame(frame)
 				visited[builderID] = true
 			end
 			builderTeams[builderTeam] = true
-			-- Escalate the radius every update. We want to send units away the minimum distance, but  
+			-- Escalate the radius every update. We want to send units away the minimum distance, but
 			-- if there are many units in the way, they may cause a traffic jam and need to clear more room.
 			builderRadiusOffsets[builderID] = builderRadiusOffsets[builderID] + BUGGEROFF_RADIUS_INCREMENT
 
@@ -222,7 +222,7 @@ function gadget:GameFrame(frame)
 							end
 						end
 
-						if Spring.TestMoveOrder(Spring.GetUnitDefID(interferingUnitID), sendX, targetY, sendZ) then 
+						if Spring.TestMoveOrder(Spring.GetUnitDefID(interferingUnitID), sendX, targetY, sendZ) then
 							Spring.GiveOrderToUnit(interferingUnitID, CMD.INSERT, {0, CMD.MOVE, CMD.OPT_INTERNAL, sendX, targetY, sendZ}, CMD.OPT_ALT )
 						end
 					end
@@ -281,7 +281,7 @@ function gadget:Initialize()
 		for _, unitID in ipairs(unitList) do
 			gadget:MetaUnitAdded(unitID, Spring.GetUnitDefID(unitID), teamID)
 		end
-	end	
+	end
 end
 
 function gadget:MetaUnitRemoved(unitID, unitDefID, unitTeam)
