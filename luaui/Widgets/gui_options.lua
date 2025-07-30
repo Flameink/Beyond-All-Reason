@@ -2487,7 +2487,7 @@ function init()
 		{ id = "label_gfx_environment", group = "gfx", name = Spring.I18N('ui.settings.option.label_environment'), category = types.basic },
 		{ id = "label_gfx_environment_spacer", group = "gfx", category = types.basic },
 
-		{ id = "featuredrawdist", group = "gfx", category = types.advanced, name = Spring.I18N('ui.settings.option.featuredrawdist'), type = "slider", min = 2500, max = 15000, step = 500, value = tonumber(Spring.GetConfigInt("FeatureDrawDistance", 10000)), description = Spring.I18N('ui.settings.option.featuredrawdist_descr'),
+		{ id = "featuredrawdist", group = "gfx", category = types.advanced, name = Spring.I18N('ui.settings.option.featuredrawdist'), type = "slider", min = 2500, max = 40000, step = 500, value = tonumber(Spring.GetConfigInt("FeatureDrawDistance", 10000)), description = Spring.I18N('ui.settings.option.featuredrawdist_descr'),
 		  onchange = function(i, value)
 			  Spring.SetConfigInt("FeatureFadeDistance", math.floor(value * 0.8))
 			  Spring.SetConfigInt("FeatureDrawDistance", value)
@@ -2805,14 +2805,6 @@ function init()
 				init()
 			end
 		end
-		},
-		{ id = "soundtrackSilenceTimer", group = "sound", category = types.basic, name = Spring.I18N('ui.settings.option.soundtracksilence'), type = "bool", value = Spring.GetConfigInt('UseSoundtrackSilenceTimer', 1) == 1, description = Spring.I18N('ui.settings.option.soundtracksilence_descr'),
-			onchange = function(i, value)
-				Spring.SetConfigInt('UseSoundtrackSilenceTimer', value and 1 or 0)
-				if WG['music'] and WG['music'].RefreshSettings then
-					WG['music'].RefreshSettings()
-				end
-			end
 		},
 		{ id = "soundtrackInterruption", group = "sound", category = types.basic, name = Spring.I18N('ui.settings.option.soundtrackinterruption'), type = "bool", value = Spring.GetConfigInt('UseSoundtrackInterruption', 1) == 1, description = Spring.I18N('ui.settings.option.soundtrackinterruption_descr'),
 			onchange = function(i, value)
@@ -3541,12 +3533,28 @@ function init()
 			  saveOptionValue('AdvPlayersList', 'advplayerlist_api', 'SetScale', { 'customScale' }, value)
 		  end,
 		},
+		{ id = "advplayerlist_showallyid", group = "ui", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.advplayerlist_showallyid'), type = "bool", value = false, description = Spring.I18N('ui.settings.option.advplayerlist_showallyid_descr'),
+		  onload = function(i)
+			  loadWidgetData("AdvPlayersList", "advplayerlist_showallyid", { 'm_active_Table', 'allyid' })
+		  end,
+		  onchange = function(i, value)
+			  saveOptionValue('AdvPlayersList', 'advplayerlist_api', 'SetModuleActive', { 'm_active_Table', 'allyid' }, value, { 'allyid', value })
+		  end,
+		},
 		{ id = "advplayerlist_showid", group = "ui", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.advplayerlist_showid'), type = "bool", value = false, description = Spring.I18N('ui.settings.option.advplayerlist_showid_descr'),
 		  onload = function(i)
 			  loadWidgetData("AdvPlayersList", "advplayerlist_showid", { 'm_active_Table', 'id' })
 		  end,
 		  onchange = function(i, value)
 			  saveOptionValue('AdvPlayersList', 'advplayerlist_api', 'SetModuleActive', { 'm_active_Table', 'id' }, value, { 'id', value })
+		  end,
+		},
+		{ id = "advplayerlist_showplayerid", group = "ui", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.advplayerlist_showplayerid'), type = "bool", value = false, description = Spring.I18N('ui.settings.option.advplayerlist_showplayerid_descr'),
+		  onload = function(i)
+			  loadWidgetData("AdvPlayersList", "advplayerlist_showplayerid", { 'm_active_Table', 'playerid' })
+		  end,
+		  onchange = function(i, value)
+			  saveOptionValue('AdvPlayersList', 'advplayerlist_api', 'SetModuleActive', { 'm_active_Table', 'playerid' }, value, { 'playerid', value })
 		  end,
 		},
 		{ id = "advplayerlist_rank", group = "ui", category = types.advanced, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.advplayerlist_rank'), type = "bool", value = true, description = Spring.I18N('ui.settings.option.advplayerlist_rank_descr'),
@@ -4800,24 +4808,20 @@ function init()
 		{ id = "label_dev_debug", group = "dev", name = Spring.I18N('ui.settings.option.label_debug'), category = types.dev },
 		{ id = "label_dev_debug_spacer", group = "dev", category = types.dev },
 
-		{ id = "profiler", group = "dev", category = types.dev, widget = "Widget Profiler", name = Spring.I18N('ui.settings.option.profiler'), type = "bool", value = GetWidgetToggleValue("Widget Profiler"), description = "" },
-		{ id = "profiler_min_time", group = "dev", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.profiler_min_time'), type = "slider", min = 0, max = 0.05, step = 0.001, value = Spring.GetConfigFloat("profiler_min_time", 0.05), description = 'Affects both Widget Profiler and Gadget Profiler',
-		onload = function(i)
-		end,
-		onchange = function(i, value)
-			Spring.SetConfigFloat("profiler_min_time", value)
-		end,
+		{ id = "profiler_widget", group = "dev", category = types.dev, widget = "Widget Profiler", name = Spring.I18N('ui.settings.option.profiler') .. widgetOptionColor .. "  " .. Spring.I18N('ui.settings.option.profiler_widget'), type = "bool", value = GetWidgetToggleValue("Widget Profiler") },
+		{ id = "profiler_gadget", group = "dev", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.profiler_gadget'), type = "bool", value = false,
+		  onchange = function(i, value)
+			  Spring.SendCommands("luarules profile")
+		  end,
 		},
-		{ id = "profiler_min_memory", group = "dev", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.profiler_min_memory'), type = "slider", min = 0, max = 10, step = 1, value = Spring.GetConfigFloat("profiler_min_memory", 5), description = 'Affects both Widget Profiler and Gadget Profiler',
-		onload = function(i)
-		end,
-		onchange = function(i, value)
-		  Spring.SetConfigFloat("profiler_min_memory", value)
-		end,
-		},
-		{ id = "profiler_sort_by_load", group = "dev", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.profiler_sort_by_load'), type = "bool", value = Spring.GetConfigInt("profiler_sort_by_load", 1), description = 'Affects both Widget Profiler and Gadget Profiler',
+		{ id = "profiler_sort_by_load", group = "dev", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.profiler_sort_by_load'), type = "bool", value = Spring.GetConfigInt("profiler_sort_by_load", 1), description = Spring.I18N('ui.settings.option.profiler_sort_by_load_descr'),
 		onchange = function(i, value)
 			Spring.SetConfigInt("profiler_sort_by_load", (value and '1' or '0'))
+		end,
+	  },
+	  { id = "profiler_averagetime", group = "dev", category = types.dev, name = widgetOptionColor .. "   " .. Spring.I18N('ui.settings.option.profiler_averagetime'), type = "slider", min = 0.1, max = 10, step = 0.1, value = Spring.GetConfigFloat("profiler_averagetime", 2), description = Spring.I18N('ui.settings.option.profiler_averagetime_descr'),
+		onchange = function(i, value)
+			Spring.SetConfigFloat("profiler_averagetime", value)
 		end,
 	  },
 		{ id = "framegrapher", group = "dev", category = types.dev, widget = "Frame Grapher", name = Spring.I18N('ui.settings.option.framegrapher'), type = "bool", value = GetWidgetToggleValue("Frame Grapher"), description = "" },
@@ -6263,20 +6267,21 @@ function init()
 
 	-- add auto cloak toggles
 	local defaultUnitdefConfig = {	-- copy pasted defaults from the widget
-		[UnitDefNames["armdecom"].id] = false,
-		[UnitDefNames["cordecom"].id] = false,
-		[UnitDefNames["armferret"].id] = false,
-		[UnitDefNames["armamb"].id] = false,
-		[UnitDefNames["armpb"].id] = false,
-		[UnitDefNames["armsnipe"].id] = false,
-		[UnitDefNames["corsktl"].id] = false,
-		[UnitDefNames["armgremlin"].id] = true,
-		[UnitDefNames["armamex"].id] = true,
-		[UnitDefNames["armshockwave"].id] = true,
-		[UnitDefNames["armckfus"].id] = true,
-		[UnitDefNames["armspy"].id] = true,
-		[UnitDefNames["corspy"].id] = true,
-		[UnitDefNames["corphantom"].id] = true,
+		[UnitDefNames["armdecom"] and UnitDefNames["armdecom"].id or -1] = false,
+		[UnitDefNames["cordecom"] and UnitDefNames["cordecom"].id or -1] = false,
+		[UnitDefNames["armferret"] and UnitDefNames["armferret"].id or -1] = false,
+		[UnitDefNames["armamb"] and UnitDefNames["armamb"].id or -1] = false,
+		[UnitDefNames["armpb"] and UnitDefNames["armpb"].id or -1] = false,
+		[UnitDefNames["armsnipe"] and UnitDefNames["armsnipe"].id or -1] = false,
+		[UnitDefNames["corsktl"] and UnitDefNames["corsktl"].id or -1] = false,
+		[UnitDefNames["armgremlin"] and UnitDefNames["armgremlin"].id or -1] = true,
+		[UnitDefNames["armamex"] and UnitDefNames["armamex"].id or -1] = true,
+		[UnitDefNames["armshockwave"] and UnitDefNames["armshockwave"].id or -1] = true,
+		[UnitDefNames["armckfus"] and UnitDefNames["armckfus"].id or -1] = true,
+		[UnitDefNames["armspy"] and UnitDefNames["armspy"].id or -1] = true,
+		[UnitDefNames["corspy"] and UnitDefNames["corspy"].id or -1] = true,
+		[UnitDefNames["corphantom"] and UnitDefNames["corphantom"].id or -1] = true,
+		[UnitDefNames["legaspy"] and UnitDefNames["legaspy"].id or -1] = true,
 	}
 	local unitdefConfig = {}
 	if WG['autocloak'] ~= nil then
