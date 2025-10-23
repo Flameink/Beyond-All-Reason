@@ -1,5 +1,10 @@
 local gadget = gadget ---@type Gadget
 
+
+local function printf(arg)
+	Spring.Echo(arg)
+end
+
 function gadget:GetInfo()
 	return {
 		name = "weapon prioritization",
@@ -287,7 +292,7 @@ local function calculateWeaponDibsPriority(weaponDefID)
 			break
 		end
 	end
-	weaponDefDibsSteps[weaponDefID] = dibsStep
+	-- weaponDefDibsSteps[weaponDefID] = dibsStep
 end
 
 local function calculateWeaponDoomages(weaponDefID)
@@ -388,10 +393,12 @@ local function applyProjectileDoomages()
 				
 				local adjustedDoomage = baseDoomage * certainty
 				targetUnitData.doomPoints = targetUnitData.doomPoints - adjustedDoomage
+				printf(targetUnitData.doomPoints.." "..adjustedDoomage.." ")
 				
-				if targetUnitData.doomPoints <= 0 then
-					doomedUnits[targetID] = true
-				end
+				
+				-- if targetUnitData.doomPoints <= 0 then
+				-- 	doomedUnits[targetID] = true
+				-- end
 			end
 		end
 	end
@@ -464,28 +471,6 @@ local function clearTargetsFromWeaponsWithNoTarget()
 	end
 end
 
-for weaponDefID, weaponDef in ipairs(WeaponDefs) do
-
-
-	local watchWeapon = false
-	if not ignoredWeaponTypes[weaponDef.type] then
-		if projectileWeaponTypes[weaponDef.type] and projectileSpeedIsSlowerThanACycle(weaponDef.range, weaponDef.projectilespeed) then
-			watchWeapon = true
-			slowProjectileDefs[weaponDefID] = true
-		end
-		calculateWeaponCertainties(weaponDefID)
-		calculateWeaponDibsPriority(weaponDefID)
-		calculateWeaponDoomages(weaponDefID)
-	end
-
-	if weaponTypeCertaintyPenalties[weaponDef.type] then
-		Script.SetWatchAllowTarget(weaponDefID, true)
-	end
-	if watchWeapon then
-		Script.SetWatchWeapon(weaponDefID, true)
-	end
-
-end
 
 function gadget:UnitCreated(unitID, unitDefID, unitTeam, builderID, builderDefID, builderTeam)
 	local health = Spring.GetUnitHealth(unitID)
@@ -510,7 +495,8 @@ function gadget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerD
 	end
 end
 
-function gadget:ProjectileCreated(projectileID, weaponDefID, attackerID, attackerDefID, attackerTeam)
+function gadget:ProjectileCreated(projectileID, attackerID, weaponDefID)
+	printf("ProjectileCreated with weaponDefID" .. weaponDefID)
 	if slowProjectileDefs[weaponDefID] then
 		local targetType, targetID = spGetProjectileTarget(projectileID)
 		if targetType == PROJECTILE_TARGET_TYPE_UNIT then
@@ -543,10 +529,12 @@ function gadget:ProjectileCreated(projectileID, weaponDefID, attackerID, attacke
 				doomage = doomage
 			}
 		end
+	else
+		printf("weaponDefID "..weaponDefID.." was not in slowProjectileDefs")
 	end
 end
 
-function gadget:ProjectileDestroyed(projectileID)
+function gadget:ProjectileDestroyed(projectileID, ownerID, proWeaponDefID)
 	projectileWatch[projectileID] = nil
 end
 
@@ -568,6 +556,11 @@ observations:
 2x multiplier heavily biases it and rarely triggers retargeting.
 ]]
 
+-- 1. We need to return false when slow projectiles try to target a doomed unit
+-- Normal weapons should never return false in allowWeaponTarget. They should only modify the priority.
+-- 2. If a user manually targets a unit then it should always go through(I think this already happens)
+-- 3. Laser weapons don't care at all. 
+
 local priorityMultipliers = {
 	dropNow = 10,
 	dropMaybe = 5,
@@ -579,6 +572,7 @@ function gadget:AllowWeaponTarget(attackerID, targetID, attackerWeaponNum, attac
 	if not defPriority then
 		return
 	end
+	-- Spring.Echo("allowing or not"..attackerID..targetID)
 	
 	-- Check if target doesn't match existing weapon's current entry
 	local weaponID = getWeaponID(attackerID, attackerWeaponNum)
@@ -591,6 +585,8 @@ function gadget:AllowWeaponTarget(attackerID, targetID, attackerWeaponNum, attac
 	end
 	
 	local targetUnitData = unitWatch[targetID]
+	-- printf(targetUnitData.doomPoints.."   "..-targetUnitData.maxDoomPoints)
+	-- if target is already doomed, deny targeting to said target
 	if targetUnitData and targetUnitData.doomPoints <= -targetUnitData.maxDoomPoints then
 		Spring.Echo("Target denied - doomPoints too negative", targetID, targetUnitData.doomPoints, -targetUnitData.maxDoomPoints)
 		return false, defPriority * priorityMultipliers.dropNow
@@ -599,6 +595,31 @@ function gadget:AllowWeaponTarget(attackerID, targetID, attackerWeaponNum, attac
 end
 
 function gadget:Initialize()
+	for weaponDefID, weaponDef in ipairs(WeaponDefs) do
+		-- printf("initializing weapondID")
+		-- printf(weaponDefID)
+		-- printf("weaponDef.type was")
+		-- printf(weaponDef.type)
+		local watchWeapon = false
+		if not ignoredWeaponTypes[weaponDef.type] then
+			printf("Passed")
+			watchWeapon = true
+			if projectileWeaponTypes[weaponDef.type] and projectileSpeedIsSlowerThanACycle(weaponDef.range, weaponDef.projectilespeed) then
+			end
+			slowProjectileDefs[weaponDefID] = true
+			calculateWeaponCertainties(weaponDefID)
+			calculateWeaponDibsPriority(weaponDefID)
+			calculateWeaponDoomages(weaponDefID)
+		end
+		if weaponTypeCertaintyPenalties[weaponDef.type] then
+			Script.SetWatchAllowTarget(weaponDefID, true)
+		end
+		if watchWeapon then
+			Script.SetWatchWeapon(weaponDefID, true)
+		end
+
+	end
+	-- printf(slowProjectileDefs)
 	local allUnits = Spring.GetAllUnits()
 	for i = 1, #allUnits do
 		local unitID = allUnits[i]
