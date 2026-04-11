@@ -729,7 +729,8 @@ function widget:UnitIdle(unitID, unitDefID, unitTeam)
 		if transportState and transportState.state == "used" then
 			transportState.state = "idle"
 			transportState.transporteeID = nil
-			Check_try_to_transport_waiting(unitID, unitDefID)
+			local x, y, z = Spring.GetUnitPosition(unitID)
+			transportState.homePosition = { x = x, y = y, z = z }
 		end
 	end
 end
