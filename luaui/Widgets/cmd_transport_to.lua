@@ -289,6 +289,14 @@ local outSharedUnits = {}
 local TRANSPORT_COMMAND_COMPLETE_RADIUS = 20
 local TRANSPORT_COMMAND_COMPLETE_RADIUS_SQ = TRANSPORT_COMMAND_COMPLETE_RADIUS * TRANSPORT_COMMAND_COMPLETE_RADIUS
 
+---@type table<integer, boolean>
+local trackedDecoupledTransports = {}
+
+---@type table<integer, boolean>
+local trackedTransportToUnits = {}
+
+local POLL_INTERVAL = 15 -- ~0.5s at 30 sim fps
+
 local function IsUnitStillRequestingTransport(unitID)
 	local commandQueue = GetUnitCommands(unitID, 1) or {}
 	local nextCommand = commandQueue[1]
@@ -541,6 +549,16 @@ function widget:UnitFromFactory(unitID, unitDefID)
 	if isTransportDef[unitDefID] then
 		Check_try_to_transport_waiting(unitID, unitDefID)
 	end
+
+	if isTransportableDef[unitDefID] then
+		local commandQueue = GetUnitCommands(unitID, -1) or {}
+		for _, cmd in ipairs(commandQueue) do
+			if cmd.id == CMD_TRANSPORT_TO then
+				trackedTransportToUnits[unitID] = true
+				break
+			end
+		end
+	end
 end
 
 function On_tstate_becameAvalible(transportState)
@@ -756,6 +774,7 @@ function widget:UnitUnloaded(unitID, _, _, transportID)
 			unitState.transport_state = nil
 		end
 		transportState.state = "decoupled"
+		trackedDecoupledTransports[transportID] = true
 	end
 
 	transportState.isLoaded = false
@@ -772,6 +791,8 @@ function widget:UnitDestroyed(unitID, unitDefID)
 	unitsWaitingForTransport[unitID] = nil
 	pendingClearMoveGoal[unitID] = nil
 	outSharedUnits[unitID] = nil
+	trackedDecoupledTransports[unitID] = nil
+	trackedTransportToUnits[unitID] = nil
 end
 
 function Check_setMoveGoal(unitID, x, y, z, unitTeam)
@@ -805,80 +826,151 @@ function Check_setMoveGoal(unitID, x, y, z, unitTeam)
 	end
 end
 
-function widget:UnitCmdDone(unitID, unitDefID, unitTeam, _, cmdParams, cmdOpts)
-	if isFactoryDef[unitDefID] then
+function widget:GameFrame(n)
+	if n % POLL_INTERVAL ~= 0 then
 		return
 	end
 
-	local commandQueue = GetUnitCommands(unitID, -1) or {}
-	local currentCommand = spGetUnitCurrentCommand(unitID)
-	local nextCommand = commandQueue[1]
-	local isLastInQueue = currentCommand == nil
-	local isOwnTeam = unitTeam == myTeamID
-
-	-- Detect engine-generated completion from CMD.INSERT expansion.
-	local comesFromEngine = cmdOpts and cmdOpts.coded == 16
-
-	if isTransportDef[unitDefID] then
-		local transportState = Get_transport_state(unitID)
-		if transportState and transportState.state == "decoupled" and isOwnTeam and isLastInQueue then
-			transportState.state = "available"
-			On_tstate_becameAvalible(transportState)
-			if transportState.homePosition then
-				SetUnitMoveGoal(unitID, transportState.homePosition.x, transportState.homePosition.y, transportState.homePosition.z)
-			end
-			transportState.transporteeID = nil
+	-- Check A: Clear pending move goals (from old Update).
+	for unitID, active in pairs(pendingClearMoveGoal) do
+		if active then
+			ClearUnitMoveGoal(unitID)
+			pendingClearMoveGoal[unitID] = false
 		end
 	end
 
-	if nextCommand and nextCommand.id == CMD_TRANSPORT_TO and isTransportableDef[unitDefID] then
-		local nextParams = nextCommand.params
-		local unitState = Get_unit_state(unitID)
-		local transportState = unitState and unitState.transport_state or nil
-
-		if unitState and not transportState then
-			local foundTransport = PickBestTransport(unitID, cmdParams[1], cmdParams[3], unitDefID)
-			if foundTransport then
-				local pickedState = Get_transport_state(foundTransport)
-				if pickedState then
-					GiveOrderToUnit(foundTransport, CMD_LOAD_UNITS, { unitID }, {})
-					pickedState.state = "coupled"
-					pickedState.transportID = foundTransport
-					pickedState.transporteeID = unitID
-					unitState.transport_state = pickedState
-					unitState.isWaitingForTransport = false
-					unitsWaitingForTransport[unitID] = false
-
-					ReleaseCompetingTransports(unitID, foundTransport)
-				end
+	-- Check B: Decoupled transports that finished retracing.
+	for transportID in pairs(trackedDecoupledTransports) do
+		if not ValidUnitID(transportID) then
+			trackedDecoupledTransports[transportID] = nil
+		else
+			local transportState = Get_transport_state(transportID)
+			if not transportState or transportState.state ~= "decoupled" then
+				trackedDecoupledTransports[transportID] = nil
 			else
-				unitState.isWaitingForTransport = true
-				unitsWaitingForTransport[unitID] = true
-				SetUnitMoveGoal(unitID, nextParams[1], nextParams[2], nextParams[3])
+				local currentCmd = spGetUnitCurrentCommand(transportID)
+				if currentCmd == nil then
+					transportState.state = "available"
+					transportState.transporteeID = nil
+					trackedDecoupledTransports[transportID] = nil
+					if transportState.homePosition then
+						SetUnitMoveGoal(
+							transportID,
+							transportState.homePosition.x,
+							transportState.homePosition.y,
+							transportState.homePosition.z
+						)
+					end
+					On_tstate_becameAvalible(transportState)
+				end
 			end
 		end
-	elseif isTransportableDef[unitDefID] and not comesFromEngine then
-		local unitState = Get_unit_state(unitID)
-		local transportState = unitState and unitState.transport_state or nil
+	end
 
-		if transportState and transportState.state == "coupled" then
-			transportState.state = "available"
-			On_tstate_becameAvalible(transportState)
-			transportState.transporteeID = nil
-			GiveOrderToUnit(transportState.transportID, CMD_STOP, {}, {})
-			if transportState.homePosition then
-				SetUnitMoveGoal(
-					transportState.transportID,
-					transportState.homePosition.x,
-					transportState.homePosition.y,
-					transportState.homePosition.z
-				)
+	-- Check C: Units with Transport To that need assignment or cancellation.
+	for unitID in pairs(trackedTransportToUnits) do
+		if not ValidUnitID(unitID) then
+			trackedTransportToUnits[unitID] = nil
+		else
+			local unitDefID = GetUnitDefID(unitID)
+			if not unitDefID or not isTransportableDef[unitDefID] then
+				trackedTransportToUnits[unitID] = nil
+			else
+				local unitState = Get_unit_state(unitID)
+				local fullQueue = GetUnitCommands(unitID, -1) or {}
+				local currentCmd = fullQueue[1]
+
+				local cmdName = currentCmd and tostring(currentCmd.id) or "none"
+				local hasTS = unitState and unitState.transport_state and ("yes:" .. unitState.transport_state.state) or "no"
+				local isWaiting = unitState and unitState.isWaitingForTransport and "yes" or "no"
+				Spring.Echo("[TT] CheckC id=" .. unitID .. " cmd=" .. cmdName .. " ts=" .. hasTS .. " wait=" .. isWaiting .. " qLen=" .. #fullQueue)
+
+				if not currentCmd or currentCmd.id ~= CMD_TRANSPORT_TO then
+					-- Current command is not TRANSPORT_TO. Check if it's
+					-- still queued further ahead (e.g. unit walking out of factory).
+					local hasQueuedTransportTo = false
+					for _, cmd in ipairs(fullQueue) do
+						if cmd.id == CMD_TRANSPORT_TO then
+							hasQueuedTransportTo = true
+							break
+						end
+					end
+
+					if hasQueuedTransportTo then
+						Spring.Echo("[TT]   -> TT queued ahead, skipping")
+					else
+						Spring.Echo("[TT]   -> TT gone from queue, clearing")
+						-- TRANSPORT_TO is gone from the queue entirely.
+						if unitState and unitState.transport_state then
+							local transportState = unitState.transport_state
+							if transportState.state == "coupled" and not transportState.isLoaded then
+								transportState.state = "available"
+								transportState.transporteeID = nil
+								GiveOrderToUnit(transportState.transportID, CMD_STOP, {}, {})
+								if transportState.homePosition then
+									SetUnitMoveGoal(
+										transportState.transportID,
+										transportState.homePosition.x,
+										transportState.homePosition.y,
+										transportState.homePosition.z
+									)
+								end
+								On_tstate_becameAvalible(transportState)
+							end
+							unitState.transport_state = nil
+						end
+						if unitState then
+							unitState.isWaitingForTransport = false
+							unitsWaitingForTransport[unitID] = false
+						end
+						trackedTransportToUnits[unitID] = nil
+					end
+				elseif unitState
+					and unitState.transport_state == nil
+					and not unitState.isWaitingForTransport
+				then
+					-- Unit has TRANSPORT_TO but no transport assigned and not waiting.
+					-- Guard: skip if unit is already at destination (post-unload race
+					-- or walked there). Don't remove from tracking — the gadget will
+					-- complete this command and the next poll handles what follows.
+					if not IsUnitStillRequestingTransport(unitID) then
+						Spring.Echo("[TT]   -> at destination, skipping")
+					else
+						local ux, _, uz = GetUnitPosition(unitID)
+						local foundTransport = PickBestTransport(unitID, ux, uz, unitDefID)
+						Spring.Echo("[TT]   -> assigning, transport=" .. tostring(foundTransport))
+						if foundTransport then
+							local pickedState = Get_transport_state(foundTransport)
+							if pickedState then
+								GiveOrderToUnit(foundTransport, CMD_LOAD_UNITS, { unitID }, {})
+								pickedState.state = "coupled"
+								pickedState.transportID = foundTransport
+								pickedState.transporteeID = unitID
+								unitState.transport_state = pickedState
+								unitState.isWaitingForTransport = false
+								unitsWaitingForTransport[unitID] = false
+								ReleaseCompetingTransports(unitID, foundTransport)
+							end
+						else
+							Spring.Echo("[TT]   -> no transport, marking waiting + move goal")
+							local nextParams = currentCmd.params
+							unitState.isWaitingForTransport = true
+							unitsWaitingForTransport[unitID] = true
+							SetUnitMoveGoal(unitID, nextParams[1], nextParams[2], nextParams[3])
+						end
+					end
+				else
+					-- Log why we're skipping: TRANSPORT_TO is current but conditions not met
+					Spring.Echo("[TT]   -> TT is current but skipping (ts=" .. hasTS .. " wait=" .. isWaiting .. ")")
+				end
 			end
 		end
+	end
 
-		if unitState then
-			unitState.isWaitingForTransport = false
-			unitsWaitingForTransport[unitID] = false
+	-- Check D: Cancel waiting units that lost TRANSPORT_TO.
+	for unitID, active in pairs(unitsWaitingForTransport) do
+		if active and not IsUnitStillRequestingTransport(unitID) then
+			CancelPassengerTransportRequest(unitID)
 		end
 	end
 end
@@ -910,6 +1002,10 @@ function widget:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOp
 		local isOwnTeam = unitTeam == myTeamID
 		local _, _, _, _, buildProgress = Spring.GetUnitHealth(unitID)
 		local isNanoFrame = buildProgress < 1.0
+
+		if cmdID == CMD_TRANSPORT_TO and isOwnTeam then
+			trackedTransportToUnits[unitID] = true
+		end
 
 		if
 			cmdID == CMD_TRANSPORT_TO
@@ -946,18 +1042,6 @@ function widget:UnitCommand(unitID, unitDefID, unitTeam, cmdID, cmdParams, cmdOp
 end
 
 function widget:Update()
-	for unitID, active in pairs(pendingClearMoveGoal) do
-		if active then
-			ClearUnitMoveGoal(unitID)
-			pendingClearMoveGoal[unitID] = false
-		end
-	end
-
-	for unitID, active in pairs(unitsWaitingForTransport) do
-		if active and not IsUnitStillRequestingTransport(unitID) then
-			CancelPassengerTransportRequest(unitID)
-		end
-	end
 end
 
 function widget:DrawWorld()
@@ -1003,8 +1087,9 @@ local function cmd_notify(unitID, cmdID, cmdParams, cmdOpts)
 		if transportState then
 			Check_transport_out_off_commision(unitID)
 			transportState.state = "used"
+			trackedDecoupledTransports[unitID] = nil
 
-			if cmdID == CMD_MOVE then
+			if cmdID == CMD_MOVE or cmdID == CMD_UNLOAD_UNITS then
 				transportState = Get_transport_state(unitID)
 				if transportState then
 					transportState.homePosition = { x = cmdParams[1], y = cmdParams[2], z = cmdParams[3] }
@@ -1021,15 +1106,13 @@ local function cmd_notify(unitID, cmdID, cmdParams, cmdOpts)
 
 		unitState.isWaitingForTransport = false
 		unitsWaitingForTransport[unitID] = false
+		trackedTransportToUnits[unitID] = nil
 
 		local transportState = unitState.transport_state
 		if transportState and transportState.state == "coupled" and transportState.isLoaded == false then
 			transportState.state = "available"
 			On_tstate_becameAvalible(transportState)
 			GiveOrderToUnit(transportState.transportID, CMD_STOP, {}, {})
-			if transportState.homePosition then
-				SetUnitMoveGoal(transportState.transportID, transportState.homePosition.x, transportState.homePosition.y, transportState.homePosition.z)
-			end
 			transportState.transporteeID = nil
 		end
 

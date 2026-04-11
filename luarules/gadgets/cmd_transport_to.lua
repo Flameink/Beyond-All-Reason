@@ -30,7 +30,7 @@ end
 local ValidUnitID = Spring.ValidUnitID
 
 local CMD_TRANSPORT_TO = GameCMD.TRANSPORT_TO
-local TRANSPORT_COMMAND_COMPLETE_RADIUS = 20
+local TRANSPORT_COMMAND_COMPLETE_RADIUS_SQ = 100
 
 local isTransportableDef = {}
 local loadedUnits = {} -- [unitID] = true while carried by a transport
@@ -73,9 +73,9 @@ function gadget:CommandFallback(unitID, _, _, cmdID, cmdParams)
 	end
 
 	local ux, _, uz = Spring.GetUnitPosition(unitID)
-	local distance = distanceSq(ux, uz, cmdParams[1], cmdParams[3])
+	local distance = math.sqrt(distanceSq(ux, uz, cmdParams[1], cmdParams[3])) 
 
-	if loadedUnits[unitID] or distance < TRANSPORT_COMMAND_COMPLETE_RADIUS then
+	if loadedUnits[unitID] or distance <= TRANSPORT_COMMAND_COMPLETE_RADIUS_SQ then
 		loadedUnits[unitID] = nil
 		return true, true
 	end
